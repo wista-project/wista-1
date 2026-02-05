@@ -1,13 +1,5 @@
 # GitHub Actions workflow to automatically replace occurrences of "lovable"
-# - creates branch remove-lovable-<timestamp>
-# - replaces text according to simple heuristics:
-#    * author files (package.json, README*, LICENSE, CONTRIBUTING, files containing "author") -> "woolisbest"
-#    * otherwise -> "wista"
-# - commits, pushes branch, and opens a PR against main
-#
-# Trigger: manual (workflow_dispatch). Run from Actions tab -> this workflow -> Run workflow.
-#
-# IMPORTANT: Review the generated PR before merging. This script modifies text files in-place.
+# Creates branch remove-lovable-<timestamp>, replaces occurrences, commits, pushes, and opens a PR.
 name: Replace "lovable" with wista / woolisbest
 
 on:
@@ -35,14 +27,12 @@ jobs:
         run: |
           set -euo pipefail
           export TERM_SEARCH='lovable'
-          # git grep returns non-zero if none found; handle that
           FILES=$(git grep -I -l --line-number -- "$TERM_SEARCH" || true)
           if [ -z "$FILES" ]; then
             echo "no_matches=true" >> $GITHUB_OUTPUT
             echo "No occurrences of 'lovable' found."
             exit 0
           fi
-          # produce unique file list (git grep gives file:line:...)
           echo "$FILES" | cut -d: -f1 | sort -u > /tmp/files_with_lovable.txt
           echo "files_path=/tmp/files_with_lovable.txt" >> $GITHUB_OUTPUT
           echo "Found these files:"
@@ -63,6 +53,11 @@ jobs:
           BRANCH="remove-lovable-${TIMESTAMP}"
           git checkout -b "$BRANCH"
 
+          # Ensure git has an identity to allow commits in the runner
+          # Use the workflow actor and a no-reply email to avoid exposing personal emails
+          git config user.name "${GITHUB_ACTOR}"
+          git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+
           repo_owner="$(echo $GITHUB_REPOSITORY | cut -d'/' -f1)"
           repo_name="$(echo $GITHUB_REPOSITORY | cut -d'/' -f2)"
           echo "Working in branch: $BRANCH (repo: $repo_owner/$repo_name)"
@@ -70,16 +65,12 @@ jobs:
           changed_files=()
 
           for f in $FILELIST; do
-            # skip binary files by checking git detect-encoding or file command
             if file "$f" | grep -qi 'text'; then
-              # Decide replacement: if file indicates author/metadata -> woolisbest, else wista
               replace_with="wista"
-              # file name heuristics
               fname="$(basename "$f" | tr '[:upper:]' '[:lower:]')"
               if [[ "$fname" == "package.json" ]] || echo "$f" | grep -Ei 'readme|license|contrib|authors|contributors' >/dev/null 2>&1; then
                 replace_with="woolisbest"
               else
-                # If file contains "author" key near occurrences, prefer woolisbest
                 if grep -i -n 'author' "$f" >/dev/null 2>&1; then
                   replace_with="woolisbest"
                 fi
@@ -87,17 +78,13 @@ jobs:
 
               echo "Processing $f  -> replacing 'lovable' with '$replace_with'"
 
-              # Use word-boundary replacement to avoid accidental substring changes
-              # Make a backup to enable review if needed
               cp "$f" "${f}.bak_for_lovable"
               perl -0777 -pe "s/\\blovable\\b/${replace_with}/gmi" "${f}.bak_for_lovable" > "$f"
 
-              # If file changed, stage it
               if ! cmp -s "${f}.bak_for_lovable" "$f"; then
                 git add "$f"
                 changed_files+=("$f")
               else
-                # restore original if no change
                 mv -f "${f}.bak_for_lovable" "$f"
               fi
             else
@@ -108,16 +95,13 @@ jobs:
           if [ ${#changed_files[@]} -eq 0 ]; then
             echo "no_replacements=true" >> $GITHUB_OUTPUT
             echo "No files were modified after replacement."
-            # delete branch and exit gracefully
             git checkout -
             exit 0
           fi
 
-          # Commit changes (one commit summarizing changes)
           git commit -m "Replace 'lovable' -> wista/woolisbest (automated)"
           git push --set-upstream origin "$BRANCH"
 
-          # Expose outputs for PR creation
           echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
           echo "changed_count=${#changed_files[@]}" >> $GITHUB_OUTPUT
           echo "changed_files<<EOF" >> $GITHUB_OUTPUT
@@ -130,23 +114,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          BRANCH=$(jq -r '.branch' <<< "${{ toJson(steps.replace.outputs) }}" 2>/dev/null || echo "")
-          if [ -z "$BRANCH" ] || [ "$BRANCH" = "null" ]; then
-            # fallback: try to read from output file
-            BRANCH="${{ steps.replace.outputs.branch || '' }}"
-          fi
-          if [ -z "$BRANCH" ]; then
-            echo "Branch not found in outputs; skipping PR creation."
-            exit 0
-          fi
-
+          BRANCH="${{ steps.replace.outputs.branch || '' }}"
           PR_TITLE="Automated: replace 'lovable' with wista/woolisbest"
           PR_BODY="This PR was created by an automated workflow to replace occurrences of the term 'lovable'.\n\nPlease review changes before merging.\n\nReplacement rules applied:\n- Files with author/README/LICENSE indicators -> 'woolisbest'\n- Otherwise -> 'wista'\n\nIf you want different behavior, update .github/workflows/remove-lovable.yml and re-run.\n"
 
           api_url="https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls"
           payload=$(jq -n --arg title "$PR_TITLE" --arg head "$BRANCH" --arg base "main" --arg body "$PR_BODY" \
             '{title: $title, head: $head, base: $base, body: $body}')
-          echo "Creating PR via GitHub API..."
           response=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
             -X POST "$api_url" -d "$payload")
           pr_url=$(echo "$response" | jq -r .html_url // empty)
