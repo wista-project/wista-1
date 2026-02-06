@@ -1,4 +1,11 @@
 # WISTA
+## 開発
+Reactとtypescript、viteを利用してSPA(Single Page Application)にしています。
+
+## デプロイ、改造は禁止していませんが、Issuesなどで伝えていただけると非常に助かります。
+renderやgithub pagesでのデプロイに対応しています。
+
+## 説明
 たくさんのAPIを使用したyoutube代替ウェブアプリケーションです。
 
 地域制限を回避します。
